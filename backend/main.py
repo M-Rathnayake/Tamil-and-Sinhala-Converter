@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from websocket.stream_handler import handle_voice_translation_stream
 
 app = FastAPI(
-    title="Sinhala-to-Tamil Live AI Voice Translation Backend",
+    title="Sinhala-to-Tamil Live AI Voice Translation backend",
     description="Low-latency WebSocket streaming server powered by Gemini Multimodal Live API."
 )
 
