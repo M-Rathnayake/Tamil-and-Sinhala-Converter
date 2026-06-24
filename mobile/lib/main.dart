@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:share_plus/share_plus.dart';
 import 'dart:math';
+import 'services/translation_service.dart';
 
 void main() {
   runApp(const TranslatorApp());
@@ -70,14 +73,11 @@ class MainTranslationScreen extends StatefulWidget {
 }
 
 class _MainTranslationScreenState extends State<MainTranslationScreen> with SingleTickerProviderStateMixin {
-  bool isRecording = false;
+  final TranslationService _translationService = TranslationService();
   String sourceLang = 'sinhala';
   String targetLang = 'tamil';
   
-  List<Map<String, String>> transcripts = [
-    {"speaker": "source", "text": "ආයුබෝවන්, කොහොමද?"},
-    {"speaker": "ai", "text": "வணக்கம், எப்படி இருக்கிறீர்கள்?"},
-  ];
+  bool isWalkieTalkieMode = false;
 
   late AnimationController _animController;
 
@@ -88,18 +88,41 @@ class _MainTranslationScreenState extends State<MainTranslationScreen> with Sing
       vsync: this,
       duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
+
+    _translationService.connect(sourceLang, targetLang);
+    _translationService.addListener(() {
+      setState(() {});
+    });
   }
 
   @override
   void dispose() {
+    _translationService.disconnect();
+    _translationService.dispose();
     _animController.dispose();
     super.dispose();
   }
 
   void _toggleRecording() {
-    setState(() {
-      isRecording = !isRecording;
-    });
+    if (!isWalkieTalkieMode) {
+      if (_translationService.isRecording) {
+        _translationService.stopRecording();
+      } else {
+        _translationService.startRecording();
+      }
+    }
+  }
+
+  void _onLongPressStart(LongPressStartDetails details) {
+    if (isWalkieTalkieMode) {
+      _translationService.startRecording();
+    }
+  }
+
+  void _onLongPressEnd(LongPressEndDetails details) {
+    if (isWalkieTalkieMode) {
+      _translationService.stopRecording();
+    }
   }
   
   void _swapLanguages() {
@@ -107,7 +130,22 @@ class _MainTranslationScreenState extends State<MainTranslationScreen> with Sing
       final temp = sourceLang;
       sourceLang = targetLang;
       targetLang = temp;
+      _translationService.updateLanguages(sourceLang, targetLang);
     });
+  }
+
+  void _copyToClipboard(String text) {
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("Copied to clipboard!"),
+        duration: Duration(seconds: 2),
+      )
+    );
+  }
+
+  void _shareText(String text) {
+    Share.share(text, subject: 'Translated Text');
   }
 
   @override
@@ -133,9 +171,31 @@ class _MainTranslationScreenState extends State<MainTranslationScreen> with Sing
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text(
-                        "Translator",
-                        style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600, letterSpacing: -0.5),
+                      Row(
+                        children: [
+                          IconButton(
+                            icon: Icon(isWalkieTalkieMode ? Icons.chat : Icons.waves, color: isDark ? Colors.white70 : Colors.black87),
+                            onPressed: () {
+                              setState(() {
+                                isWalkieTalkieMode = !isWalkieTalkieMode;
+                              });
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(isWalkieTalkieMode ? "Walkie-Talkie Mode Enabled" : "Continuous Mode Enabled"),
+                                  duration: const Duration(seconds: 2),
+                                )
+                              );
+                            },
+                            tooltip: "Toggle Walkie-Talkie Mode",
+                          ),
+                          IconButton(
+                            icon: Icon(Icons.delete_outline, color: isDark ? Colors.white70 : Colors.black87),
+                            onPressed: () {
+                              _translationService.clearHistory();
+                            },
+                            tooltip: "Clear History",
+                          ),
+                        ],
                       ),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -154,7 +214,7 @@ class _MainTranslationScreenState extends State<MainTranslationScreen> with Sing
                               ),
                             ),
                             const SizedBox(width: 8),
-                            const Text("Ready", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+                            const Text("Live", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
                           ],
                         ),
                       )
@@ -165,7 +225,7 @@ class _MainTranslationScreenState extends State<MainTranslationScreen> with Sing
                 GestureDetector(
                   onTap: _swapLanguages,
                   child: Container(
-                    margin: const EdgeInsets.symmetric(vertical: 20),
+                    margin: const EdgeInsets.symmetric(vertical: 10),
                     padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                     decoration: BoxDecoration(
                       border: Border.all(color: isDark ? Colors.white24 : Colors.black12),
@@ -189,34 +249,58 @@ class _MainTranslationScreenState extends State<MainTranslationScreen> with Sing
                   child: ListView.builder(
                     padding: const EdgeInsets.symmetric(horizontal: 24),
                     reverse: true,
-                    itemCount: transcripts.length,
+                    itemCount: _translationService.messages.length,
                     itemBuilder: (context, index) {
-                      final item = transcripts[transcripts.length - 1 - index];
-                      final isAI = item['speaker'] == 'ai';
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 24),
-                        alignment: isAI ? Alignment.centerRight : Alignment.centerLeft,
-                        child: Column(
-                          crossAxisAlignment: isAI ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              isAI ? targetLang.toUpperCase() : sourceLang.toUpperCase(),
-                              style: TextStyle(
-                                fontSize: 10, 
-                                fontWeight: FontWeight.w600, 
-                                color: isDark ? Colors.white54 : Colors.black54
+                      final item = _translationService.messages[_translationService.messages.length - 1 - index];
+                      final isAI = item.speaker == 'ai';
+                      return GestureDetector(
+                        onTap: () => _copyToClipboard(item.text),
+                        child: Container(
+                          margin: const EdgeInsets.only(bottom: 24),
+                          alignment: isAI ? Alignment.centerRight : Alignment.centerLeft,
+                          child: Column(
+                            crossAxisAlignment: isAI ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (!isAI)
+                                    IconButton(
+                                      icon: Icon(Icons.share, size: 14, color: isDark ? Colors.white54 : Colors.black54),
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(),
+                                      onPressed: () => _shareText(item.text),
+                                    ),
+                                  if (!isAI) const SizedBox(width: 4),
+                                  Text(
+                                    isAI ? targetLang.toUpperCase() : sourceLang.toUpperCase(),
+                                    style: TextStyle(
+                                      fontSize: 10, 
+                                      fontWeight: FontWeight.w600, 
+                                      color: isDark ? Colors.white54 : Colors.black54
+                                    ),
+                                  ),
+                                  if (isAI) const SizedBox(width: 4),
+                                  if (isAI)
+                                    IconButton(
+                                      icon: Icon(Icons.share, size: 14, color: isDark ? Colors.white54 : Colors.black54),
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(),
+                                      onPressed: () => _shareText(item.text),
+                                    ),
+                                ],
                               ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              item['text']!,
-                              style: TextStyle(
-                                fontSize: 22,
-                                fontWeight: isAI ? FontWeight.w400 : FontWeight.w600,
-                                color: isDark ? Colors.white : Colors.black,
+                              const SizedBox(height: 4),
+                              Text(
+                                item.text,
+                                style: TextStyle(
+                                  fontSize: 22,
+                                  fontWeight: isAI ? FontWeight.w400 : FontWeight.w600,
+                                  color: isDark ? Colors.white : Colors.black,
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       );
                     },
@@ -229,7 +313,7 @@ class _MainTranslationScreenState extends State<MainTranslationScreen> with Sing
                   child: Stack(
                     alignment: Alignment.center,
                     children: [
-                      if (isRecording)
+                      if (_translationService.isRecording)
                         AnimatedBuilder(
                           animation: _animController,
                           builder: (context, child) {
@@ -246,6 +330,8 @@ class _MainTranslationScreenState extends State<MainTranslationScreen> with Sing
                       
                       GestureDetector(
                         onTap: _toggleRecording,
+                        onLongPressStart: _onLongPressStart,
+                        onLongPressEnd: _onLongPressEnd,
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 300),
                           width: 80,
@@ -254,7 +340,7 @@ class _MainTranslationScreenState extends State<MainTranslationScreen> with Sing
                             shape: BoxShape.circle,
                             color: isDark ? Colors.white : Colors.black,
                             boxShadow: [
-                              if (isRecording)
+                              if (_translationService.isRecording)
                                 BoxShadow(
                                   color: isDark ? Colors.white24 : Colors.black26,
                                   blurRadius: 20,
@@ -263,7 +349,7 @@ class _MainTranslationScreenState extends State<MainTranslationScreen> with Sing
                             ]
                           ),
                           child: Icon(
-                            isRecording ? Icons.stop : Icons.mic,
+                            _translationService.isRecording ? Icons.stop : Icons.mic,
                             color: isDark ? Colors.black : Colors.white,
                             size: 32,
                           ),
@@ -272,7 +358,11 @@ class _MainTranslationScreenState extends State<MainTranslationScreen> with Sing
                     ],
                   ),
                 ),
-                const SizedBox(height: 32),
+                Text(
+                  isWalkieTalkieMode ? "Hold to speak" : "Tap to record",
+                  style: TextStyle(color: isDark ? Colors.white54 : Colors.black54, fontSize: 12),
+                ),
+                const SizedBox(height: 16),
               ],
             ),
           ),
