@@ -8,14 +8,8 @@ from backend.config.settings import settings
 
 logger = logging.getLogger("backend")
 
+
 async def handle_translation_stream(client_ws: WebSocket, source: str = "Sinhala", target: str = "Tamil"):
-    """
-    Handles a translation session for a client WebSocket:
-    1. Establishes connection to the Google Gemini Live API.
-    2. Runs concurrent async loops:
-       - client_to_gemini: Streams client PCM audio frames to Gemini Live.
-       - gemini_to_client: Receives synthesized audio + translation texts from Gemini and forwards to browser.
-    """
     if not settings.GEMINI_API_KEY:
         logger.error("GEMINI_API_KEY is not configured in settings.")
         await client_ws.send_json({
@@ -25,10 +19,8 @@ async def handle_translation_stream(client_ws: WebSocket, source: str = "Sinhala
         await client_ws.close(code=1008, reason="API key missing")
         return
 
-    # Initialize Google GenAI client
     ai_client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
-    # Map target language to its BCP-47 code for Gemini Live Translation model
     language_map = {
         "Sinhala": "si",
         "Tamil": "ta",
@@ -42,7 +34,6 @@ async def handle_translation_stream(client_ws: WebSocket, source: str = "Sinhala
     }
     target_code = language_map.get(target, "ta")
 
-    # Configure the Gemini Live session parameters for the Translation model
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         translation_config=types.TranslationConfig(
@@ -69,14 +60,12 @@ async def handle_translation_stream(client_ws: WebSocket, source: str = "Sinhala
                 "payload": {"message": "Connected to Gemini Live API. Start speaking now..."}
             })
 
-            # Loop 1: Client WebSocket -> Gemini Live Session
             async def client_to_gemini():
                 try:
                     while True:
                         message = await client_ws.receive()
                         if "bytes" in message:
                             data = message["bytes"]
-                            # Stream raw 16-bit 16kHz PCM audio chunk to Gemini
                             await session.send_realtime_input(
                                 media=types.Blob(
                                     data=data,
@@ -92,20 +81,17 @@ async def handle_translation_stream(client_ws: WebSocket, source: str = "Sinhala
                             except json.JSONDecodeError:
                                 await session.send_realtime_input(text=text_data)
                 except (WebSocketDisconnect, RuntimeError):
-                    logger.info("Client WebSocket disconnected inside client_to_gemini task.")
+                    logger.info("Client WebSocket disconnected inside client_to_gemini.")
                 except asyncio.CancelledError:
                     pass
                 except Exception as ex:
                     logger.error(f"Error in client_to_gemini: {ex}")
                     raise
 
-            # Loop 2: Gemini Live Session -> Client WebSocket
             async def gemini_to_client():
                 try:
                     async for response in session.receive():
-                        # Process response items from the Gemini Live stream
                         if response.server_content:
-                            # 1. Check for user input audio transcription
                             if response.server_content.input_transcription:
                                 text = response.server_content.input_transcription.text
                                 if text:
@@ -117,16 +103,10 @@ async def handle_translation_stream(client_ws: WebSocket, source: str = "Sinhala
                                         }
                                     })
 
-                            # 2. Check for model turn output parts
                             if response.server_content.model_turn:
-                                parts = response.server_content.model_turn.parts
-                                for part in parts:
-                                    # Synthesized translation audio (24kHz Mono 16-bit PCM)
+                                for part in response.server_content.model_turn.parts:
                                     if part.inline_data:
-                                        audio_bytes = part.inline_data.data
-                                        await client_ws.send_bytes(audio_bytes)
-
-                                    # Text transcription of the translation
+                                        await client_ws.send_bytes(part.inline_data.data)
                                     if part.text:
                                         await client_ws.send_json({
                                             "type": "translation",
@@ -135,8 +115,7 @@ async def handle_translation_stream(client_ws: WebSocket, source: str = "Sinhala
                                                 "text": part.text
                                             }
                                         })
-                        
-                            # 3. Forward turn complete signal to notify client to resume capturing mic
+
                             if response.server_content.turn_complete:
                                 await client_ws.send_json({
                                     "type": "turn_complete",
@@ -148,7 +127,6 @@ async def handle_translation_stream(client_ws: WebSocket, source: str = "Sinhala
                     logger.error(f"Error in gemini_to_client: {ex}")
                     raise
 
-            # Run both tasks concurrently and gracefully clean them up when one exits
             client_task = asyncio.create_task(client_to_gemini())
             gemini_task = asyncio.create_task(gemini_to_client())
 
